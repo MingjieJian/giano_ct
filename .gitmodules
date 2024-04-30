@@ -1,0 +1,3 @@
+[submodule "AFS"]
+	path = AFS
+	url = https://github.com/xinxuyale/AFS.git
