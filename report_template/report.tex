@@ -1,0 +1,1182 @@
+\documentclass{article}
+\usepackage{graphicx} % Required for inserting images
+\usepackage{natbib}
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+    }
+\usepackage{float}
+\usepackage[margin=0.7in]{geometry}
+\usepackage{ amssymb }
+
+\newcommand*\aap{A\&A}
+\let\astap=\aap
+\newcommand*\aapr{A\&A~Rev.}
+\newcommand*\aaps{A\&AS}
+\newcommand*\actaa{Acta Astron.}
+\newcommand*\aj{AJ}
+\newcommand*\ao{Appl.~Opt.}
+\let\applopt\ao
+\newcommand*\apj{ApJ}
+\newcommand*\apjl{ApJ}
+\let\apjlett\apjl
+\newcommand*\apjs{ApJS}
+\let\apjsupp\apjs
+\newcommand*\aplett{Astrophys.~Lett.}
+\newcommand*\apspr{Astrophys.~Space~Phys.~Res.}
+\newcommand*\apss{Ap\&SS}
+\newcommand*\araa{ARA\&A}
+\newcommand*\azh{AZh}
+\newcommand*\baas{BAAS}
+\newcommand*\bac{Bull. astr. Inst. Czechosl.}
+\newcommand*\bain{Bull.~Astron.~Inst.~Netherlands}
+\newcommand*\caa{Chinese Astron. Astrophys.}
+\newcommand*\cjaa{Chinese J. Astron. Astrophys.}
+\newcommand*\fcp{Fund.~Cosmic~Phys.}
+\newcommand*\gca{Geochim.~Cosmochim.~Acta}
+\newcommand*\grl{Geophys.~Res.~Lett.}
+\newcommand*\iaucirc{IAU~Circ.}
+\newcommand*\icarus{Icarus}
+\newcommand*\jcap{J. Cosmology Astropart. Phys.}
+\newcommand*\jcp{J.~Chem.~Phys.}
+\newcommand*\jgr{J.~Geophys.~Res.}
+\newcommand*\jqsrt{J.~Quant.~Spectr.~Rad.~Transf.}
+\newcommand*\jrasc{JRASC}
+\newcommand*\memras{MmRAS}
+\newcommand*\memsai{Mem.~Soc.~Astron.~Italiana}
+\newcommand*\mnras{MNRAS}
+\newcommand*\na{New A}
+\newcommand*\nar{New A Rev.}
+\newcommand*\nat{Nature}
+\newcommand*\nphysa{Nucl.~Phys.~A}
+\newcommand*\pasa{PASA}
+\newcommand*\pasj{PASJ}
+\newcommand*\pasp{PASP}
+\newcommand*\physrep{Phys.~Rep.}
+\newcommand*\physscr{Phys.~Scr}
+\newcommand*\planss{Planet.~Space~Sci.}
+\newcommand*\pra{Phys.~Rev.~A}
+\newcommand*\prb{Phys.~Rev.~B}
+\newcommand*\prc{Phys.~Rev.~C}
+\newcommand*\prd{Phys.~Rev.~D}
+\newcommand*\pre{Phys.~Rev.~E}
+\newcommand*\prl{Phys.~Rev.~Lett.}
+\newcommand*\procspie{Proc.~SPIE}
+\newcommand*\qjras{QJRAS}
+\newcommand*\rmxaa{Rev. Mexicana Astron. Astrofis.}
+\newcommand*\skytel{S\&T}
+\newcommand*\solphys{Sol.~Phys.}
+\newcommand*\sovast{Soviet~Ast.}
+\newcommand*\ssr{Space~Sci.~Rev.}
+\newcommand*\zap{ZAp}
+
+\title{GIANO pipeline report}
+\author{Author: Mingjie Jian \\Version: 0.0.1}
+\date{\today}
+
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+
+\section{Introduction}
+
+This is the pipeline to perform the continuum normalisation and telluric correction for the GIANO spectra. 
+Here we outline the procedures:
+\begin{enumerate}
+    \item Perform raw continuum fitting using the AFS algorithm from \citet[][the same algorithm is also used below]{Xu2019};
+    \item Remove the spikes with flux exceeding the raw continuum and $\alpha \times N$-pixel-running-standard-deviation. The removed pixel will then be filled with the values by linear interpolation from adjacent pixels; 
+    \item Perform continuum fitting again;
+    \item For the order with moderate to severe telluric absorption, the telluric absorption may alter the continuum level, leading to bad telluric fitting if use the spectra in step 3. The spectra in these orders are then scaled to the telluric continuum by dividing the step 3 spectra by the continuum fitted using a standard telluric spectrum.
+    \item Perform telluric correction using the \hyperlink{https://github.com/kgullikson88/Telluric-Fitter}{TelFit} package \citep{Gullikson2014}.
+    \item Connect the spectra for each order to one spectrum.
+\end{enumerate}
+
+A detailed description of each step is described in the sections referenced above.
+
+\section{Parameters and pipeline situation}
+
+\begin{itemize}
+    \item input file name: [input_file_name]
+    \item Elevation of the star: [EL]
+    \item Standard upscale factor $\alpha$: [std_upscale]
+    \item Filter window length: [filter_window]
+    \item Pipeline situation: spike removal [spike_rej], continuum normalisation [cont_nor], telluric correction [tell_corr], order combination [combine]. 
+\end{itemize}
+
+Columns in the output file \texttt{spec\_con\_tell.csv} and \texttt{spec\_con\_tell\_combine.csv}:
+\begin{itemize}
+    \item \texttt{order}: input column, the order of the GIANO spectra
+    \item \texttt{wave}: input column, the wavelength in $\mathrm{\AA}$
+    \item \texttt{flux}: input column, the raw flux
+    \item \texttt{snr}: input column, the signal-to-noise ratio
+    \item \texttt{flux\_con\_raw}: the raw continuum normalised flux in step 1-2;
+    \item \texttt{flux\_median\_filtered}: running median filtered flux;
+    \item \texttt{flux\_std\_filtered}: running standard deviation filtered flux;
+    \item \texttt{indices\_con\_remove}: the pixels excluded for continuum normalisation;
+    \item \texttt{flux\_con\_input}: the flux used for the continuum normalisation after excluding the \texttt{indices\_con\_remove} pixels;
+    \item \texttt{flux\_con\_final}: the continuum normalised and telluric scaled flux after excluding the \texttt{indices\_con\_remove} pixels;
+    \item \texttt{tell\_flux}: the fitted telluric spectral flux;
+    \item \texttt{flux\_con\_notell}: the final observed spectral flux after continuum normalisation and telluric correction.
+\end{itemize}
+
+\section{Output spectrum}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/all_short.pdf}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order81.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order80.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order79.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order78.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order77.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order76.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order75.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order74.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order73.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order72.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order71.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order70.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order69.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order68.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order67.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order66.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order65.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order64.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order63.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order62.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order61.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order60.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order59.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order58.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order57.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order56.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order55.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order54.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order53.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order52.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order51.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order50.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order49.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order48.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order47.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order46.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order45.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order44.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order43.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order42.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order41.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order40.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order39.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order38.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order37.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order36.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order35.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order34.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order33.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../final/order32.pdf}
+\end{figure}
+
+\newpage
+
+\section{Step 1-2: remove the spikes}
+
+Spikes appear in the GIANO spectra.
+The AFS normalisation algorithm is largely affected by the spikes. 
+Thus here we first reject the spikes in the spectrum and produce ``spike free'' spectra for continuum fitting.
+A raw continuum and a 61-pixel running median + running standard deviation (with sigma clipping) line is first derived. 
+All the pixels above these two curves are treated as spikes. 
+Their values are calculated by linear interpolation using the adjacent pixels, as shown below.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order81.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order80.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order79.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order78.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order77.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order76.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order75.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order74.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order73.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order72.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order71.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order70.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order69.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order68.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order67.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order66.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order65.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order64.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order63.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order62.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order61.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order60.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order59.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order58.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order57.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order56.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order55.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order54.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order53.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order52.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order51.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order50.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order49.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order48.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order47.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order46.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order45.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order44.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order43.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order42.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order41.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order40.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order39.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order38.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order37.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order36.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order35.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order34.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order33.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../spike_rej/order32.pdf}
+\end{figure}
+
+
+\newpage
+
+\section{Step 3-4: raw continuum normalisation}
+
+The spike-removed spectra in steps 1-2 are used to perform a continuum fitting and normalisation.
+For some orders ([tell_con_order]), the telluric absorption is moderate to strong, so that the continuum shape is affected.
+Using the continuum corrected to perform telluric correction would over-correct the continuum. 
+Thus the continuum of these orders are altered to fit the telluric spectra continuum, by $f_\mathrm{} = f_\mathrm{con} \times \mathrm{AFScont}(f_\mathrm{tell-standard})$.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order81.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order80.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order79.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order78.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order77.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order76.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order75.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order74.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order73.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order72.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order71.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order70.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order69.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order68.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order67.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order66.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order65.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order64.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order63.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order62.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order61.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order60.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order59.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order58.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order57.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order56.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order55.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order54.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order53.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order52.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order51.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order50.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order49.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order48.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order47.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order46.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order45.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order44.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order43.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order42.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order41.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order40.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order39.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order38.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order37.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order36.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order35.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order34.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order33.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../cont_nor/order32.pdf}
+\end{figure}
+
+\newpage
+
+\section{Step 5: telluric correction}
+
+Telluric correction is then performed using TelFit. 
+The TelFit telluric spectra is altered to provide the minimum standard deviation of $f / f$.
+Since the continuum normalisation is usually good, no further normalisation is required after telluric correction. 
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order81.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order80.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order79.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order78.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order77.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order76.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order75.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order74.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order73.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order72.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order71.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order70.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order69.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order68.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order67.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order66.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order65.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order64.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order63.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order62.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order61.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order60.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order59.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order58.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order57.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order56.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order55.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order54.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order53.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order52.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order51.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order50.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order49.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order48.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order47.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order46.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order45.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order44.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order43.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order42.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order41.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order40.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order39.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order38.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order37.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order36.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order35.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order34.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order33.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../tell_corr/order32.pdf}
+\end{figure}
+
+\newpage
+
+\section{Step 6: Connect the order spectra to one spectrum}
+
+Finally, we connect (or combine) the spectra for all orders to a spectrum.
+For order $n$, when it overlaps with the adjacent order, the overlapped regions are divided into two equal-width parts, the parts closer to the middle of order $n$ are re-sampled to the wavelength grid of this order, and those on the edge are re-sampled to the wavelength grid of order $n-1$ or $n+1$.
+The $S/N$s of each order are decreased from the input value to the 1\% of that as approaches the edge. 
+The raw flux are added up, and the continuum normalised flux are combined by the weighted average with the weights as $(S/N)^2$.
+The $S/N$ are combined by $\sqrt{(S/N_n)^2 + (S/N_{n-1})^2}$.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order81.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order80.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order79.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order78.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order77.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order76.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order75.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order74.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order73.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order72.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order71.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order70.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order69.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order68.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order67.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order66.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order65.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order64.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order63.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order62.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order61.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order60.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order59.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order58.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order57.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order56.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order55.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order54.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order53.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order52.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order51.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order50.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order49.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order48.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order47.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order46.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order45.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order44.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order43.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order42.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order41.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order40.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order39.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order38.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order37.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order36.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order35.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order34.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order33.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../combine/order32.pdf}
+\end{figure}
+
+\bibliographystyle{aa} % style aa.bst
+\bibliography{refs} % your references Yourfile.bib
+
+\end{document}
