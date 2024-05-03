@@ -5,7 +5,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from astropy.io import fits
-import rulerwd
+from astropy import units as u
+
+from telfit import TelluricFitter, DataStructures
+from functools import wraps
 
 import rpy2.robjects as robjects
 from rpy2.robjects import pandas2ri
@@ -13,7 +16,6 @@ pandas2ri.activate()
 from scipy.optimize import minimize
 from scipy.signal import medfilt
 
-from telfit import Modeler
 import os, sys
 import shutil
 
@@ -67,6 +69,69 @@ def tell_correct_std(x, obs_y, tell_y):
     std = np.std(obs_y / (1 - (1-tell_y)*x))
     return std
 
+def suppress_stdout(f, *args, **kwargs):
+    """
+    A simple decorator to suppress function print outputs.
+    Borrowed from the lightkurve pkg @ https://github.com/lightkurve/lightkurve and igrins_rv pkg @ https://github.com/shihyuntang/igrins_rv/blob/master/Engine/importmodule.py
+    """
+
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        # redirect output to `null`
+        with open(os.devnull, "w") as devnull:
+            old_out = sys.stdout
+            sys.stdout = devnull
+            try:
+                return f(*args, **kwargs)
+            # restore to default
+            finally:
+                sys.stdout = old_out
+
+    return wrapper
+
+# to suppress print out from Telfit
+@suppress_stdout
+def suppress_Fit(fitter, data, air_wave=True):
+    model = fitter.Fit(data=data, resolution_fit_mode="SVD", adjust_wave="model", air_wave=air_wave)
+    return model
+
+def Telfit(wav, flux, altitude, temperature, location, resolution, suppress_stdout=False, air_wave=True):
+    fitter = TelluricFitter()
+    if location == 'KSU':
+        fitter.SetObservatory({"latitude": 35.068833058, "altitude":0.154})
+    elif location == 'NTT':
+        fitter.SetObservatory({"latitude": -29.25, "altitude": 2.4})
+    elif location == 'TNG':
+        fitter.SetObservatory({"latitude": 28.75408, "altitude":2.37})
+    elif location == 'Magellan':
+        fitter.SetObservatory({"latitude": 29.0, "altitude":2.38})
+
+    pressure = 1013
+    fitter.FitVariable({'h2o': 25,
+                        "co2": 368.5,
+                        "o2": 2.12e5,
+                        "ch4": 1.8,
+                        "pressure": pressure,
+                        "resolution": resolution})
+    fitter.AdjustValue({"angle": 90 - altitude,
+                        "temperature": temperature,
+                        "wavestart": (wav[0] - 20.0)/10,
+                        "waveend": (wav[-1] + 20.0)/10})
+    fitter.SetBounds({"h2o": [10, 200],
+                      "o2": [5e4, 1e6],
+                      "ch4": [1.5, 2.1],
+                      "co2": [360, 400],
+                      "pressure": [pressure-5, pressure+5],
+                      "resolution":[25000, 52000]})
+
+    data = DataStructures.xypoint(x=(wav/10)*u.nanometer, y=flux, cont=np.zeros(len(wav))+1)
+    if suppress_stdout:
+        model = suppress_Fit(fitter, data, air_wave=air_wave)
+    else:
+        model = fitter.Fit(data=data, resolution_fit_mode="SVD", adjust_wave="model", air_wave=air_wave)
+
+    return model
+
 def replace_continuous_true(boo, threshold=40):
     indices = np.nonzero(boo[1:] != boo[:-1])[0] + 1
     for i in range(len(indices)-1):
@@ -108,7 +173,7 @@ with open('AFS/functions/AFS.R', 'r') as f:
 robjects.r(custom_code)
 AFS = robjects.r['AFS']
 
-def raw_continuum(spec, std_upscale=3, filter_window=101):
+def raw_continuum(spec, std_upscale=3, filter_window=61):
     '''
     Perform raw continuum normalizaiton.
     '''
@@ -139,14 +204,22 @@ def raw_continuum(spec, std_upscale=3, filter_window=101):
     for ele in split_continuous_elements(spec[spec['indices_con_remove']].index):
         indices_inperp = [ele[0]-1] + ele + [ele[-1]+1]
         indices_edge = [ele[0]-1] + [ele[-1]+1]
-        spec.loc[indices_inperp, 'flux_con_input'] = np.interp(spec.loc[indices_inperp, 'wave'], spec.loc[indices_edge, 'wave'], spec.loc[indices_edge, 'flux'])
-        spec.loc[indices_inperp, 'flux_con_input'] = spec.loc[indices_inperp, 'flux_con_input'] * (1+np.random.randn(len(spec.loc[indices_inperp, 'flux_con_input']))*0.01)
+        if indices_inperp[0] not in spec.index:
+            spec.loc[indices_inperp[1:], 'flux_con_input'] = spec.loc[indices_inperp[-1], 'flux_con_input']# * (1+np.random.randn(len(spec.loc[indices_inperp[1:], 'flux_con_input']))*0.1)
+        elif indices_inperp[-1] not in spec.index:
+            spec.loc[indices_inperp[:-1], 'flux_con_input'] = spec.loc[indices_inperp[0], 'flux_con_input']# * (1+np.random.randn(len(spec.loc[indices_inperp[:-1], 'flux_con_input']))*0.1)
+        else:
+            spec.loc[indices_inperp, 'flux_con_input'] = np.interp(spec.loc[indices_inperp, 'wave'], spec.loc[indices_edge, 'wave'], spec.loc[indices_edge, 'flux']) * (1+np.random.randn(len(spec.loc[indices_inperp, 'flux_con_input']))*0.01)
 
     # Second continuum estimation
     for order in tqdm(order_list):
         indices = spec['order'] == order
-        afs_result = afs(spec[indices], input_flux='flux_con_input')
-        spec.loc[indices, 'flux_con_final'] = spec.loc[indices, 'flux'] / (spec.loc[indices, 'flux_con_input'] / afs_result)
+        try:
+            afs_result = afs(spec[indices], input_flux='flux_con_input')
+            spec.loc[indices, 'flux_con_final'] = spec.loc[indices, 'flux'] / (spec.loc[indices, 'flux_con_input'] / afs_result)
+        except:
+            print(f'Second continuum estimation for order {order} failed. Roll back to raw continuum estimation.')
+            spec.loc[indices, 'flux_con_final'] = spec.loc[indices, 'flux_con_raw']
         
         # Retrive the telluric continuum
         if order in tell_correct_type['tell_con']:
@@ -158,7 +231,7 @@ def raw_continuum(spec, std_upscale=3, filter_window=101):
             afs_result_tell_model = afs(spec_tell_model, input_flux='flux_tell_model')
             spec.loc[indices, 'flux_con_final'] = spec.loc[indices, 'flux_con_final'].values * spec_tell_model['flux_tell_model'].values / afs_result_tell_model
 
-    return spec
+    return spec, filter_window, std_upscale
 
 def telluric_correction(spec, input_spec):
 
@@ -182,8 +255,15 @@ def telluric_correction(spec, input_spec):
             spec.loc[indices, 'tell_flux'] = np.nan
             spec.loc[indices, 'flux_con_notell'] = 1
         else:
-            res = rulerwd.telfit_wrapper.Telfit(spec.loc[indices, 'wave'].values, spec.loc[indices, 'flux_con_final'].values, 
-                                                EL, 285, 'TNG', 50000, air_wave=False, suppress_stdout=True)
+            try:
+                res = Telfit(spec.loc[indices, 'wave'].values, spec.loc[indices, 'flux_con_final'].values,
+                             EL, 285, 'TNG', 50000, air_wave=False, suppress_stdout=True)
+            except:
+                print(f'Telluric correction of order {order} failed.')
+                res.y = 1 - 1e-3
+                spec.loc[indices, 'tell_flux'] = 1
+                spec.loc[indices, 'flux_con_notell'] = spec.loc[indices, 'flux_con_final'] / spec.loc[indices, 'tell_flux']
+                continue
             res.y += 1e-3
             tell_indices = 1 - res.y > 0.01
             if order in tell_correct_type['tell_con']:
@@ -200,7 +280,7 @@ def telluric_correction(spec, input_spec):
                                 bounds=[(0.5, 1.5)])['x'][0]
             spec.loc[indices, 'tell_flux'] = (1 - (1-res.y) * tell_ratio)
             spec.loc[indices, 'flux_con_notell'] = spec.loc[indices, 'flux_con_final'] / spec.loc[indices, 'tell_flux']
-    return spec
+    return spec, EL
     
 def combine(spec, edge_percent=0.2):
 
@@ -252,7 +332,10 @@ def combine(spec, edge_percent=0.2):
                     spec_t1_add[col] = spec_t1[col] + spec_t2_resample[col]
                 for col in ['flux_con_raw', 'flux_con_final', 'tell_flux', 'flux_con_notell']:
                     spec_t1_add[col] = np.average([spec_t1[col], spec_t2_resample[col]], axis=0,
-                                                        weights=[spec_t1['snr']**2, spec_t2_resample['snr']**2])
+                                                        weights=[1/spec_t1['flux_std_filtered']**2, 1/spec_t2_resample['flux_std_filtered']**2])
+                # for col in ['flux_con_raw', 'flux_con_final', 'tell_flux', 'flux_con_notell']:
+                #     spec_t1_add[col] = np.average([spec_t1[col], spec_t2_resample[col]], axis=0,
+                #                                         weights=[spec_t1['snr']**2, spec_t2_resample['snr']**2])
 
                 spec_all = pd.concat([spec_all, spec_t1_add])
 
@@ -276,14 +359,16 @@ def combine(spec, edge_percent=0.2):
                     spec_t2_add[col] = spec_t2[col] + spec_t1_resample[col]                
                 for col in ['flux_con_raw', 'flux_con_final', 'tell_flux', 'flux_con_notell']:
                     spec_t2_add[col] = np.average([spec_t2[col], spec_t1_resample[col]], axis=0,
-                                                        weights=[spec_t2['snr']**2, spec_t1_resample['snr']**2])
-                    
+                                                        weights=[1/spec_t2['flux_std_filtered']**2, 1/spec_t1_resample['flux_std_filtered']**2])
+                # for col in ['flux_con_raw', 'flux_con_final', 'tell_flux', 'flux_con_notell']:
+                #     spec_t2_add[col] = np.average([spec_t2[col], spec_t1_resample[col]], axis=0,
+                #                                         weights=[spec_t2['snr']**2, spec_t1_resample['snr']**2])
                 spec_all = pd.concat([spec_all, spec_t2_add])
 
     spec_all = spec_all.drop(columns='indices_con_remove')
     return spec_all
     
-def plot_result(spec, spec_all, output_folder, spike_rej=False, cont_nor=False, tell_corr=False, combine=False, final=True):
+def plot_result(spec, spec_all, output_folder, spike_rej=True, cont_nor=True, tell_corr=True, combine=True, final=True):
     '''
     Plot the raw continuum spectra.
     '''
@@ -333,7 +418,7 @@ def plot_result(spec, spec_all, output_folder, spike_rej=False, cont_nor=False, 
             plt.axhline(1, ls='--', color='brown', alpha=0.5)
             
             indices = (standard_telluric_spectra['wave'] >= xlim[0]) & (standard_telluric_spectra['wave'] <= xlim[1])
-            plt.plot(standard_telluric_spectra.loc[indices, 'wave'], standard_telluric_spectra.loc[indices, 'flux'], lw=1, alpha=0.4, label='Standard Telluric spectra')
+            plt.plot(standard_telluric_spectra['wave'][indices], standard_telluric_spectra['flux'][indices], lw=1, alpha=0.4, label='Standard Telluric spectra')
             
             plt.legend(fontsize=7)
             plt.tight_layout()
@@ -372,8 +457,16 @@ def plot_result(spec, spec_all, output_folder, spike_rej=False, cont_nor=False, 
                 for ele in split_continuous_elements(spec[indices & ((spec['indices_con_remove']) | (spec['indices_tell_con_remove']))].index):
                     indices_inperp = [ele[0]-1] + ele + [ele[-1]+1]
                     indices_edge = [ele[0]-1] + [ele[-1]+1]
-                    spec.loc[indices_inperp, 'flux_con_notell_input'] = np.interp(spec.loc[indices_inperp, 'wave'], spec.loc[indices_edge, 'wave'], spec.loc[indices_edge, 'flux_con_notell'])
-                    spec.loc[indices_inperp, 'flux_con_notell_input'] = spec.loc[indices_inperp, 'flux_con_notell_input'] * (1+np.random.randn(len(spec.loc[indices_inperp, 'flux_con_notell_input']))*0.05)
+                    
+                    # spec.loc[indices_inperp, 'flux_con_notell_input'] = np.interp(spec.loc[indices_inperp, 'wave'], spec.loc[indices_edge, 'wave'], spec.loc[indices_edge, 'flux_con_notell'])
+                    # spec.loc[indices_inperp, 'flux_con_notell_input'] = spec.loc[indices_inperp, 'flux_con_notell_input'] * (1+np.random.randn(len(spec.loc[indices_inperp, 'flux_con_notell_input']))*0.05)
+
+                    if indices_inperp[0] not in spec.index:
+                        spec.loc[indices_inperp[1:], 'flux_con_notell_input'] = spec.loc[indices_inperp[-1], 'flux_con_notell']# * (1+np.random.randn(len(spec.loc[indices_inperp[1:], 'flux_con_input']))*0.1)
+                    elif indices_inperp[-1] not in spec.index:
+                        spec.loc[indices_inperp[:-1], 'flux_con_notell_input'] = spec.loc[indices_inperp[0], 'flux_con_notell']# * (1+np.random.randn(len(spec.loc[indices_inperp[:-1], 'flux_con_input']))*0.1)
+                    else:
+                        spec.loc[indices_inperp, 'flux_con_notell_input'] = np.interp(spec.loc[indices_inperp, 'wave'], spec.loc[indices_edge, 'wave'], spec.loc[indices_edge, 'flux_con_notell']) * (1+np.random.randn(len(spec.loc[indices_inperp, 'flux_con_notell_input']))*0.05)
 
             plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_con_notell'], 
                     zorder=1, label='Telluric corrected spectra')
@@ -438,39 +531,43 @@ def plot_result(spec, spec_all, output_folder, spike_rej=False, cont_nor=False, 
             plt.figure(figsize=(13, 3))
 
             indices = spec['order'] == order
-            plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_con_notell'], lw=1, c='gray', alpha=0.6, zorder=0)
+            plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_con_notell'], lw=1, c='gray', alpha=0.6, zorder=0, label='Normalisted spectra of current order after telluric correction')
             plt.xlim(plt.xlim())
-            plt.plot(spec_all['wave'], spec_all['flux_con_notell'], lw=1, zorder=5)
+            plt.plot(spec_all['wave'], spec_all['flux_con_notell'], lw=1, zorder=5, label='Normalisted-connected spectra after telluric correction')
 
             indices = spec['order'] == order - 1
             plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_con_notell'], 
-                    c='gray', lw=1, zorder=0, alpha=0.6, ls='-.')
+                    c='gray', lw=1, zorder=0, alpha=0.6, ls='-.', label='Normalisted spectra of the previous order after telluric correction')
             indices = spec['order'] == order + 1
             plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_con_notell'], 
-                    c='gray', lw=1, zorder=0, alpha=0.6, ls='--')
+                    c='gray', lw=1, zorder=0, alpha=0.6, ls='--', label='Normalisted spectra of the next order after telluric correction')
             plt.title(f'Order {order}')
             plt.axhline(1, ls='--', color='brown')
  
             plt.ylim(0, 1.15)
             
+            plt.legend(fontsize=7)
             plt.tight_layout()
             plt.savefig(f'{output_folder}/final/order{order}.pdf')
             plt.close()
 
-            plt.figure(figsize=(13, 3))
-            plt.plot(spec_all['wave'], spec_all['flux_con_notell'], lw=0.1)
-            plt.ylim(0, 1.15)
+        plt.figure(figsize=(13, 3))
+        plt.plot(spec_all['wave'], spec_all['flux_con_notell'], lw=0.1, label='Normalisted spectra after telluric correction', zorder=5)
+        plt.plot(spec_all['wave'], spec_all['flux_con_final'], lw=0.1, label='Normalisted spectra before telluric correction', c='gray', zorder=0)
+        plt.ylim(0, 1.15)
 
-            plt.tight_layout()
-            plt.savefig(f'{output_folder}/final/all_short.pdf')
-            plt.close()
+        plt.tight_layout()
+        plt.legend(fontsize=7)
+        plt.savefig(f'{output_folder}/final/all_short.pdf')
+        plt.close()
 
-def generate_report(input_spec, output_folder):
+def generate_report(input_spec, output_folder, EL, filter_window, std_upscale, version):
     input_spec_report = input_spec.replace('_', '\_')
     report_replact_dict = {
         'input_file_name': f'\\texttt{{{input_spec_report}}}',
-        'EL': '50', 'std_upscale': '3', 'filter_window': '61',
-        'spike_rej': '\\checkmark', 'cont_nor': '\\checkmark', 'tell_corr': '\\checkmark', 'combine': '\\checkmark'
+        'EL': f'{EL:.2f}', 'std_upscale': str(std_upscale), 'filter_window': str(filter_window),
+        'spike_rej': '\\checkmark', 'cont_nor': '\\checkmark', 'tell_corr': '\\checkmark', 'combine': '\\checkmark',
+        'tell_con_order': str(tell_correct_type['tell_con'])[1:-1], 'version':version
     }
 
     # Copy the template to output folder
@@ -492,6 +589,8 @@ def generate_report(input_spec, output_folder):
     os.system(f'pdflatex -interaction=nonstopmode -quiet report')
     os.system(f'pdflatex -interaction=nonstopmode -quiet report')
     os.chdir(working_folder)
+
+version = '0.0.1'
 
 # Read the standard telluric spectra
 standard_telluric_spectra = np.load('standard_telluric_spectra.npy')
@@ -517,6 +616,7 @@ tell_correct_type = {
     ]
 }
 
+
 def main(input_spec, output_folder):
     print(input_spec, output_folder)
 
@@ -534,8 +634,8 @@ def main(input_spec, output_folder):
     spec.loc[spec['snr'] < 0.01, 'snr'] = 0.01
     spec.loc[spec['flux'] < 0.01, 'flux'] = 0.01
     
-    spec = raw_continuum(spec)
-    spec = telluric_correction(spec, input_spec)
+    spec, filter_window, std_upscale = raw_continuum(spec)
+    spec, EL = telluric_correction(spec, input_spec)
     spec_all = combine(spec)
     plot_result(spec, spec_all, output_folder)
 
@@ -543,7 +643,7 @@ def main(input_spec, output_folder):
     spec.to_csv(f'{output_folder}/spec_con_tell.csv', index=False)
     spec_all.to_csv(f'{output_folder}/spec_con_tell_combine.csv', index=False)
 
-    generate_report(input_spec, output_folder)
+    generate_report(input_spec, output_folder, EL, filter_window, std_upscale, version)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GIANO-CT pipeline")

@@ -73,8 +73,8 @@
 \newcommand*\ssr{Space~Sci.~Rev.}
 \newcommand*\zap{ZAp}
 
-\title{GIANO pipeline report}
-\author{Author: Mingjie Jian \\Version: 0.0.1}
+\title{GIANO-CT pre-analysis report}
+\author{Author: Mingjie Jian \\Version: [version]}
 \date{\today}
 
 
@@ -86,7 +86,8 @@
 
 \section{Introduction}
 
-This is the pipeline to perform the continuum normalisation and telluric correction for the GIANO spectra. 
+This is the pre-analysis report on the continuum normalisation and telluric correction for the GIANO spectra. 
+The source code can be found in \url{https://github.com/MingjieJian/giano_ct}.
 Here we outline the procedures:
 \begin{enumerate}
     \item Perform raw continuum fitting using the AFS algorithm from \citet[][the same algorithm is also used below]{Xu2019};
@@ -103,10 +104,9 @@ A detailed description of each step is described in the sections referenced abov
 
 \begin{itemize}
     \item input file name: [input_file_name]
-    \item Elevation of the star: [EL]
+    \item Elevation of the star: [EL] \degree
     \item Standard upscale factor $\alpha$: [std_upscale]
     \item Filter window length: [filter_window]
-    \item Pipeline situation: spike removal [spike_rej], continuum normalisation [cont_nor], telluric correction [tell_corr], order combination [combine]. 
 \end{itemize}
 
 Columns in the output file \texttt{spec\_con\_tell.csv} and \texttt{spec\_con\_tell\_combine.csv}:
