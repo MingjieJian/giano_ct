@@ -241,8 +241,10 @@ def telluric_correction(spec, input_spec):
         file = fits.open(f'{input_spec[:-4]}.fits')
         header = file[0].header
         EL = np.rad2deg(header['EL'])
+        EL_status = ''
     except FileNotFoundError:
         EL = 50
+        EL_status = ', fixed value'
 
     spec['tell_flux'] = spec['flux_con_final']
     spec['flux_con_notell'] = spec['flux_con_final']
@@ -280,7 +282,7 @@ def telluric_correction(spec, input_spec):
                                 bounds=[(0.5, 1.5)])['x'][0]
             spec.loc[indices, 'tell_flux'] = (1 - (1-res.y) * tell_ratio)
             spec.loc[indices, 'flux_con_notell'] = spec.loc[indices, 'flux_con_final'] / spec.loc[indices, 'tell_flux']
-    return spec, EL
+    return spec, EL, EL_status
     
 def combine(spec, edge_percent=0.2):
 
@@ -561,11 +563,11 @@ def plot_result(spec, spec_all, output_folder, spike_rej=True, cont_nor=True, te
         plt.savefig(f'{output_folder}/final/all_short.pdf')
         plt.close()
 
-def generate_report(input_spec, output_folder, EL, filter_window, std_upscale, version):
+def generate_report(input_spec, output_folder, EL, EL_status, filter_window, std_upscale, version):
     input_spec_report = input_spec.replace('_', '\_')
     report_replact_dict = {
         'input_file_name': f'\\texttt{{{input_spec_report}}}',
-        'EL': f'{EL:.2f}', 'std_upscale': str(std_upscale), 'filter_window': str(filter_window),
+        'EL': f'{EL:.2f} degree{EL_status}', 'std_upscale': str(std_upscale), 'filter_window': str(filter_window),
         'spike_rej': '\\checkmark', 'cont_nor': '\\checkmark', 'tell_corr': '\\checkmark', 'combine': '\\checkmark',
         'tell_con_order': str(tell_correct_type['tell_con'])[1:-1], 'version':version
     }
@@ -590,7 +592,7 @@ def generate_report(input_spec, output_folder, EL, filter_window, std_upscale, v
     os.system(f'pdflatex -interaction=nonstopmode -quiet report')
     os.chdir(working_folder)
 
-version = '0.0.1'
+version = '0.0.2'
 
 # Read the standard telluric spectra
 standard_telluric_spectra = np.load('standard_telluric_spectra.npy')
