@@ -23,6 +23,8 @@ import spectres
 
 import argparse
 
+script_folder = os.path.dirname(os.path.abspath(__file__))
+
 def find_overlap_range(arr1, arr2):
     # 找出两个数组中的最小值和最大值
     min_val = max(min(arr1), min(arr2))
@@ -132,11 +134,17 @@ def Telfit(wav, flux, altitude, temperature, location, resolution, suppress_stdo
 
     return model
 
-def replace_continuous_true(boo, threshold=40):
+def replace_continuous_true(boo, threshold=40, edge_thres=7):
     indices = np.nonzero(boo[1:] != boo[:-1])[0] + 1
     for i in range(len(indices)-1):
         if indices[i+1] - indices[i] >= threshold:
             boo[indices[i]:indices[i+1]] = False
+    # If the first(last) edge_thres pixels are all removed, bring them back.
+    if np.all(boo[:edge_thres]):
+        boo[:edge_thres] = False
+    if np.all(boo[edge_thres:]):
+        boo[edge_thres:] = False 
+
     return boo
 
 def std_running_filter(data, window_size):
@@ -167,7 +175,7 @@ def std_running_filter(data, window_size):
     return filtered_data
 
 # Load the content in the R file
-with open('AFS/functions/AFS.R', 'r') as f:
+with open(f'{script_folder}/AFS/functions/AFS.R', 'r') as f:
     custom_code = f.read()
 # Load the R function 
 robjects.r(custom_code)
@@ -183,6 +191,7 @@ def raw_continuum(spec, std_upscale=3, filter_window=61):
     # AFS continuum
     print('****************************')
     print('Performing raw continuum fitting')
+    print('    First AFS continuum......')
     for order in tqdm(order_list):
         indices = spec['order'] == order
         afs_result = afs(spec[indices])
@@ -191,12 +200,19 @@ def raw_continuum(spec, std_upscale=3, filter_window=61):
         
         spec.loc[indices, 'flux_median_filtered'] = medfilt(spec.loc[indices, 'flux'], kernel_size=filter_window)
         spec.loc[indices, 'flux_std_filtered'] = std_upscale * std_running_filter(spec.loc[indices, 'flux'].values, window_size=filter_window)
-        std_diff = np.abs(np.diff(spec.loc[indices, 'flux_median_filtered'] + spec.loc[indices, 'flux_std_filtered']))
-        std_diff = np.concatenate([std_diff[0:1], std_diff])
+        # Adjust the edge of flux_std_filtered to avoid edge effect
+        ratio = 0.05
+        adjust_length = int(len(spec[indices]) * ratio)
+        adjust_weight = np.concatenate([np.zeros(len(spec[indices])-adjust_length), np.interp(np.linspace(0, 1, adjust_length), [0, 1], [0, 1])])
+        spec.loc[indices, 'flux_std_filtered'] -= (spec.loc[indices, 'flux_std_filtered'] - spec.loc[indices, 'flux'] / spec.loc[indices, 'flux_con_raw']) * adjust_weight
+
+        # std_diff = np.abs(np.diff(spec.loc[indices, 'flux_median_filtered'] + spec.loc[indices, 'flux_std_filtered']))
+        # std_diff = np.concatenate([std_diff[0:1], std_diff])
         
         indices_up = raw_cont < spec.loc[indices, 'flux_median_filtered']
         spec.loc[indices & indices_up, 'flux_con_raw'] = spec.loc[indices & indices_up, 'flux_median_filtered']
         
+    print('    Rejecting the spikes......')
     spec['flux_con_input'] = spec['flux']
     indices_peak = ((spec['flux'] > spec['flux_median_filtered'] + spec['flux_std_filtered']) | (spec['flux'] > spec['flux'] / spec['flux_con_raw'])).values
     spec['indices_con_remove'] = replace_continuous_true(indices_peak)
@@ -212,6 +228,7 @@ def raw_continuum(spec, std_upscale=3, filter_window=61):
             spec.loc[indices_inperp, 'flux_con_input'] = np.interp(spec.loc[indices_inperp, 'wave'], spec.loc[indices_edge, 'wave'], spec.loc[indices_edge, 'flux']) * (1+np.random.randn(len(spec.loc[indices_inperp, 'flux_con_input']))*0.01)
 
     # Second continuum estimation
+    print('    Second AFS contonuum......')
     for order in tqdm(order_list):
         indices = spec['order'] == order
         try:
@@ -223,12 +240,16 @@ def raw_continuum(spec, std_upscale=3, filter_window=61):
         
         # Retrive the telluric continuum
         if order in tell_correct_type['tell_con']:
-            indices_tell_model = (standard_telluric_spectra['wave'] >= np.min(spec.loc[indices, 'wave']) - 1) & (standard_telluric_spectra['wave'] <= np.max(spec.loc[indices, 'wave']) + 1)
+            indices_tell_model = (standard_telluric_spectra['wave'] >= np.min(spec.loc[indices, 'wave']) - 2) & (standard_telluric_spectra['wave'] <= np.max(spec.loc[indices, 'wave']) + 2)
             spec_tell_model = pd.DataFrame([spec.loc[indices, 'wave'].values, 
                                             spectres.spectres(spec.loc[indices, 'wave'].values, standard_telluric_spectra['wave'][indices_tell_model], standard_telluric_spectra['flux'][indices_tell_model])]).T
             spec_tell_model.columns = ['wave', 'flux_tell_model']
             
-            afs_result_tell_model = afs(spec_tell_model, input_flux='flux_tell_model')
+            try:
+                afs_result_tell_model = afs(spec_tell_model, input_flux='flux_tell_model')
+            except:
+                spec_tell_model['flux_tell_model'] *= (1+np.random.randn(len(spec_tell_model))*0.001)
+                afs_result_tell_model = afs(spec_tell_model, input_flux='flux_tell_model')
             spec.loc[indices, 'flux_con_final'] = spec.loc[indices, 'flux_con_final'].values * spec_tell_model['flux_tell_model'].values / afs_result_tell_model
 
     return spec, filter_window, std_upscale
@@ -244,7 +265,7 @@ def telluric_correction(spec, input_spec):
         EL_status = ''
     except FileNotFoundError:
         EL = 50
-        EL_status = ', fixed value'
+        EL_status = ' (fixed value since no fits file found).'
 
     spec['tell_flux'] = spec['flux_con_final']
     spec['flux_con_notell'] = spec['flux_con_final']
@@ -319,8 +340,7 @@ def combine(spec, edge_percent=0.2):
                 spec_t2 = spec[(spec['order'] == order-1) & (spec['wave'] >= wav_overlap_start-0.5) & (spec['wave'] < wav_overlap_mid+0.5)]
                 spec_t2_resample = spec_t1[spec_t1.columns]
 
-                for col in ['flux', 'snr', 'flux_con_raw', 'flux_median_filtered', 'flux_std_filtered', 'flux_con_input', 'flux_con_final',
-                            'tell_flux', 'flux_con_notell']:
+                for col in ['flux', 'snr', 'flux_con_raw', 'flux_median_filtered', 'flux_std_filtered', 'flux_con_input', 'flux_con_final', 'tell_flux', 'flux_con_notell']:
                     spec_t2_resample[col] = spectres.spectres(spec_t1['wave'].values, spec_t2['wave'].values, spec_t2[col].values)
 
                 edge_length = int(len(spec_t2_resample) * 0.2)
@@ -575,7 +595,7 @@ def generate_report(input_spec, output_folder, EL, EL_status, filter_window, std
     # Copy the template to output folder
     _ = shutil.copy('report_template/aa.bst', f'{output_folder}/report')
     _ = shutil.copy('report_template/refs.bib', f'{output_folder}/report')
-    report_content = open('report_template/report.tex', 'r').readlines()
+    report_content = open(f'{script_folder}/report_template/report.tex', 'r').readlines()
     report_content = '\t'.join(report_content)
 
     for key in report_replact_dict.keys():
@@ -592,10 +612,10 @@ def generate_report(input_spec, output_folder, EL, EL_status, filter_window, std
     os.system(f'pdflatex -interaction=nonstopmode -quiet report')
     os.chdir(working_folder)
 
-version = '0.0.2'
+version = '0.0.3'
 
 # Read the standard telluric spectra
-standard_telluric_spectra = np.load('standard_telluric_spectra.npy')
+standard_telluric_spectra = np.load(f'{script_folder}/standard_telluric_spectra.npy')
 standard_telluric_spectra = {'wave':standard_telluric_spectra[0, :], 'flux':standard_telluric_spectra[1, :]}
 
 tell_correct_type = {
@@ -628,8 +648,20 @@ def main(input_spec, output_folder):
 
     # sys.stdout = open(output_folder + 'giano_ct.log', 'w')
 
-    # Read the specta
-    spec = pd.read_csv(f'{input_spec}', sep=' +', engine='python', skiprows=23, names=['order', 'wave', 'flux', 'snr'])
+    # Read the spectra
+    if input_spec[-4:] == '.txt':
+        spec = pd.read_csv(f'{input_spec}', sep=' +', engine='python', skiprows=23, names=['order', 'wave', 'flux', 'snr'])
+    elif input_spec[-4:] == 'fits':
+        with fits.open(f'{input_spec}') as file:
+            spec_fit = file[1].data
+        order = []
+        for i in range(len(spec_fit['ORDER']))[::-1]:
+            order += [spec_fit['ORDER'][i]] * len(spec_fit['WAVE'][i])
+        wave = spec_fit['WAVE'].flatten()[::-1].byteswap().newbyteorder()
+        flux = spec_fit['FLUX'].flatten()[::-1].byteswap().newbyteorder()
+        snr = spec_fit['SNR'].flatten()[::-1].byteswap().newbyteorder()
+        spec = pd.DataFrame({'order':order, 'wave':wave, 'flux':flux, 'snr':snr})
+
     spec['wave'] *= 10
     # Preprocessing, avoid numeratic errors: 
     spec = spec[spec['wave'] > 9375]
@@ -637,7 +669,7 @@ def main(input_spec, output_folder):
     spec.loc[spec['flux'] < 0.01, 'flux'] = 0.01
     
     spec, filter_window, std_upscale = raw_continuum(spec)
-    spec, EL = telluric_correction(spec, input_spec)
+    spec, EL, EL_status = telluric_correction(spec, input_spec)
     spec_all = combine(spec)
     plot_result(spec, spec_all, output_folder)
 
@@ -645,7 +677,7 @@ def main(input_spec, output_folder):
     spec.to_csv(f'{output_folder}/spec_con_tell.csv', index=False)
     spec_all.to_csv(f'{output_folder}/spec_con_tell_combine.csv', index=False)
 
-    generate_report(input_spec, output_folder, EL, filter_window, std_upscale, version)
+    generate_report(input_spec, output_folder, EL, EL_status, filter_window, std_upscale, version)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GIANO-CT pipeline")
