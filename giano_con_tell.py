@@ -204,7 +204,7 @@ def raw_continuum(spec, std_upscale=3, filter_window=61):
         ratio = 0.05
         adjust_length = int(len(spec[indices]) * ratio)
         adjust_weight = np.concatenate([np.zeros(len(spec[indices])-adjust_length), np.interp(np.linspace(0, 1, adjust_length), [0, 1], [0, 1])])
-        spec.loc[indices, 'flux_std_filtered'] -= (spec.loc[indices, 'flux_std_filtered'] - spec.loc[indices, 'flux'] / spec.loc[indices, 'flux_con_raw']) * adjust_weight
+        spec.loc[indices, 'flux_std_filtered'] -= (spec.loc[indices, 'flux_median_filtered'] + spec.loc[indices, 'flux_std_filtered'] - spec.loc[indices, 'flux'] / spec.loc[indices, 'flux_con_raw']) * adjust_weight
 
         # std_diff = np.abs(np.diff(spec.loc[indices, 'flux_median_filtered'] + spec.loc[indices, 'flux_std_filtered']))
         # std_diff = np.concatenate([std_diff[0:1], std_diff])
@@ -259,7 +259,10 @@ def telluric_correction(spec, input_spec):
     order_list = spec.groupby('order').size().index
 
     try:
-        file = fits.open(f'{input_spec[:-4]}.fits')
+        if input_spec[-4:] == '.txt':
+            file = fits.open(f'{input_spec[:-4]}.fits')
+        elif input_spec[-4:] == 'fits':
+            file = fits.open(f'{input_spec}')
         header = file[0].header
         EL = np.rad2deg(header['EL'])
         EL_status = ''
@@ -639,45 +642,53 @@ tell_correct_type = {
 }
 
 
-def main(input_spec, output_folder):
+def main(input_spec, output_folder, overwrite=False):
     print(input_spec, output_folder)
+    print('main')
+    # If not overwrite, then check whether the final spectra exist.
+    if not overwrite:
+        print('not overwrite')
+        if os.path.isfile(f"{output_folder}/spec_con_tell_combine.csv") and os.path.isfile(f"{output_folder}/spec_con_tell.csv"):
+            # Proceed file exist, skip giano-ct.
+            print(f'Proceed spectra exist, skip giano-ct for {output_folder}.')
+        else:
+            print('main2')
+            # Create the result folder
+            for folder in [output_folder, output_folder+'spike_rej', output_folder+'cont_nor', output_folder+'tell_corr', output_folder+'combine', output_folder+'final', output_folder+'report']:
+                os.makedirs(folder, exist_ok=True)
 
-    # Create the result folder
-    for folder in [output_folder, output_folder+'spike_rej', output_folder+'cont_nor', output_folder+'tell_corr', output_folder+'combine', output_folder+'final', output_folder+'report']:
-        os.makedirs(folder, exist_ok=True)
+            # sys.stdout = open(output_folder + 'giano_ct.log', 'w')
 
-    # sys.stdout = open(output_folder + 'giano_ct.log', 'w')
+            # Read the spectra
+            if input_spec[-4:] == '.txt':
+                spec = pd.read_csv(f'{input_spec}', sep=' +', engine='python', skiprows=23, names=['order', 'wave', 'flux', 'snr'])
+            elif input_spec[-4:] == 'fits':
+                with fits.open(f'{input_spec}') as file:
+                    spec_fit = file[1].data
+                order = []
+                for i in range(len(spec_fit['ORDER']))[::-1]:
+                    order += [spec_fit['ORDER'][i]] * len(spec_fit['WAVE'][i])
+                wave = spec_fit['WAVE'].flatten()[::-1].byteswap().newbyteorder()
+                flux = spec_fit['FLUX'].flatten()[::-1].byteswap().newbyteorder()
+                snr = spec_fit['SNR'].flatten()[::-1].byteswap().newbyteorder()
+                spec = pd.DataFrame({'order':order, 'wave':wave, 'flux':flux, 'snr':snr})
 
-    # Read the spectra
-    if input_spec[-4:] == '.txt':
-        spec = pd.read_csv(f'{input_spec}', sep=' +', engine='python', skiprows=23, names=['order', 'wave', 'flux', 'snr'])
-    elif input_spec[-4:] == 'fits':
-        with fits.open(f'{input_spec}') as file:
-            spec_fit = file[1].data
-        order = []
-        for i in range(len(spec_fit['ORDER']))[::-1]:
-            order += [spec_fit['ORDER'][i]] * len(spec_fit['WAVE'][i])
-        wave = spec_fit['WAVE'].flatten()[::-1].byteswap().newbyteorder()
-        flux = spec_fit['FLUX'].flatten()[::-1].byteswap().newbyteorder()
-        snr = spec_fit['SNR'].flatten()[::-1].byteswap().newbyteorder()
-        spec = pd.DataFrame({'order':order, 'wave':wave, 'flux':flux, 'snr':snr})
+            spec['wave'] *= 10
+            # Preprocessing, avoid numeratic errors: 
+            spec = spec[spec['wave'] > 9375]
+            spec.loc[spec['snr'] < 0.01, 'snr'] = 0.01
+            spec.loc[spec['flux'] < 0.01, 'flux'] = 0.01
+            
+            spec, filter_window, std_upscale = raw_continuum(spec)
+            spec, EL, EL_status = telluric_correction(spec, input_spec)
+            spec_all = combine(spec)
+            plot_result(spec, spec_all, output_folder)
 
-    spec['wave'] *= 10
-    # Preprocessing, avoid numeratic errors: 
-    spec = spec[spec['wave'] > 9375]
-    spec.loc[spec['snr'] < 0.01, 'snr'] = 0.01
-    spec.loc[spec['flux'] < 0.01, 'flux'] = 0.01
-    
-    spec, filter_window, std_upscale = raw_continuum(spec)
-    spec, EL, EL_status = telluric_correction(spec, input_spec)
-    spec_all = combine(spec)
-    plot_result(spec, spec_all, output_folder)
+            # Save the spectra
+            spec.to_csv(f'{output_folder}/spec_con_tell.csv', index=False)
+            spec_all.to_csv(f'{output_folder}/spec_con_tell_combine.csv', index=False)
 
-    # Save the spectra
-    spec.to_csv(f'{output_folder}/spec_con_tell.csv', index=False)
-    spec_all.to_csv(f'{output_folder}/spec_con_tell_combine.csv', index=False)
-
-    generate_report(input_spec, output_folder, EL, EL_status, filter_window, std_upscale, version)
+            generate_report(input_spec, output_folder, EL, EL_status, filter_window, std_upscale, version)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GIANO-CT pipeline")
@@ -685,6 +696,7 @@ if __name__ == "__main__":
     # 添加输入参数
     parser.add_argument("input_spec", help="The input spectra")
     parser.add_argument("output_folder", help="The output folder")
+    print('start')
 
     # 添加带有默认值的输入参数
     # parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode", default=False)
