@@ -86,13 +86,17 @@
 
 \section{Introduction}
 
-This is the pre-analysis report on the continuum normalisation and telluric correction for the GIANO spectra. 
+This is the pre-analysis report on the continuum normalisation and telluric correction task for the GIANO spectra. 
 The source code can be found in \url{https://github.com/MingjieJian/giano_ct}.
 Here we outline the procedures:
 \begin{enumerate}
-    \item Perform raw continuum fitting using the AFS algorithm from \citet[][the same algorithm is also used below]{Xu2019};
-    \item Remove the spikes with flux exceeding the raw continuum and $\alpha \times N$-pixel-running-standard-deviation. The removed pixel will then be filled with the values by linear interpolation from adjacent pixels; 
-    \item Perform continuum fitting again;
+    \item Perform continuum fitting using the alpha-shape algorithm from \texttt{alpha\_continuum} (\url{https://github.com/MingjieJian/alpha_continuum}). The idea is adopted from \citet{Xu2019, Cretignier2020}, and part of the code is from \citet{Cretignier2020}. This step includes:
+    \begin{itemize}
+        \item Remove the spikes with the pixels higher than both the 0.99 quantile of \texttt{max\_roll\_width} (default 100\,\r{A}) and those with large differences between 0.75 and 0.55 quantile of \texttt{quantile\_width} (default 5\,\r{A});
+        \item Determine the radius of the alpha shape by extracting the full-width half-maximum of the auto-correlation function;
+        \item Increase the radius in the region with spectral lines;
+        \item Perform the alpha-shape algorithm
+    \end{itemize} 
     \item For the order with moderate to severe telluric absorption, the telluric absorption may alter the continuum level, leading to bad telluric fitting if use the spectra in step 3. The spectra in these orders are then scaled to the telluric continuum by dividing the step 3 spectra by the continuum fitted using a standard telluric spectrum.
     \item Perform telluric correction using the \hyperlink{https://github.com/kgullikson88/Telluric-Fitter}{TelFit} package \citep{Gullikson2014}.
     \item Connect the spectra for each order to one spectrum.
@@ -100,13 +104,33 @@ Here we outline the procedures:
 
 A detailed description of each step is described in the sections referenced above.
 
-\section{Parameters and pipeline situation}
+\section{Parameters and output columns}
 
 \begin{itemize}
     \item input file name: [input_file_name]
-    \item Elevation of the star: [EL] \degree
-    \item Standard upscale factor $\alpha$: [std_upscale]
-    \item Filter window length: [filter_window]
+    \item output folder: [output_folder]
+    \item Stretch: [stretch]
+    \begin{itemize}
+        \item Whether the span of flux is stretch to match that of the wavelength. 
+    \end{itemize}
+    \item Interpolation method: [fit_method]
+    \begin{itemize}
+        \item The method to interpolate the continuum points. \texttt{poly} for polynomial, \texttt{spline} for spline, and \texttt{akima} for Akima spline function. 
+    \end{itemize}
+    \item Degree of the polynomial fitting: [poly_deg]. Not used when the interpolation method is not poly.
+    \item Rollmax width: [rollmax_width]
+    \begin{itemize}
+        \item The large rolling window width for \textt{determine\_line\_width} and \textt{determine\_alpha\_radius}. 
+    \end{itemize}
+    \item Radius base ratio: [base_ratio]
+    \begin{itemize}
+        \item The base enlarge ratio for the alpha-radius by $r = \texttt{line\_FWHM} / c \times \lambda \times \texttt{base\_ratio} * (1 + \texttt{penalty} * \texttt{penalty\_ratio})$. 
+    \end{itemize}
+    \item Radius penalty ratio: [penalty_ratio]
+    \begin{itemize}
+        \item The ratio for converting penalty to alpha-radius by $r = \texttt{line\_FWHM} / c \times \lambda \times \texttt{base\_ratio} * (1 + \texttt{penalty} * \texttt{penalty\_ratio})$. 
+    \end{itemize}
+    \item Elevation of the star: [EL]
 \end{itemize}
 
 Columns in the output file \texttt{spec\_con\_tell.csv} and \texttt{spec\_con\_tell\_combine.csv}:
@@ -115,14 +139,23 @@ Columns in the output file \texttt{spec\_con\_tell.csv} and \texttt{spec\_con\_t
     \item \texttt{wave}: input column, the wavelength in $\mathrm{\AA}$
     \item \texttt{flux}: input column, the raw flux
     \item \texttt{snr}: input column, the signal-to-noise ratio
-    \item \texttt{flux\_con\_raw}: the raw continuum normalised flux in step 1-2;
-    \item \texttt{flux\_median\_filtered}: running median filtered flux;
-    \item \texttt{flux\_std\_filtered}: running standard deviation filtered flux;
-    \item \texttt{indices\_con\_remove}: the pixels excluded for continuum normalisation;
-    \item \texttt{flux\_con\_input}: the flux used for the continuum normalisation after excluding the \texttt{indices\_con\_remove} pixels;
-    \item \texttt{flux\_con\_final}: the continuum normalised and telluric scaled flux after excluding the \texttt{indices\_con\_remove} pixels;
-    \item \texttt{tell\_flux}: the fitted telluric spectral flux;
-    \item \texttt{flux\_con\_notell}: the final observed spectral flux after continuum normalisation and telluric correction.
+    \item \texttt{continuum}: the continuum of the spectra.
+    \item \texttt{flux\_normed}: the normalized spectra with telluric lines
+    \item \texttt{tell\_flux}: the model-fitted telluric spectra.
+    \item \texttt{flux\_normed\_notell}: the normalized spectra without telluric lines, or the final product.
+\end{itemize}
+
+Columns in the output file if \texttt{detail\_out} is True.
+
+\begin{itemize}
+    \item \texttt{flux\_peaks\_removed}: The input flux with peaks removed.
+    \item \texttt{indices\_peaks}: The binary array indicating the peaks.
+    \item \texttt{flux\_peaks\_removed\_smoothed}: Smoothed flux with peaks removed.
+    \item \texttt{radius}: Alpha shape radius.
+    \item \texttt{flux\_peaks\_removed\_smoothed\_stretched}: \texttt{flux\_peaks\_removed\_smoothed} stretched to the same span with wavelength. 
+    \item \texttt{flux\_peaks\_removed\_stretched}: \texttt{flux\_peaks\_removed} stretched to the same span with wavelength. 
+    \item \texttt{flux\_stretched}: \texttt{flux} stretched to the same span with wavelength. 
+    \item \texttt{edge}: the continuum points.
 \end{itemize}
 
 \section{Output spectrum}
@@ -335,13 +368,13 @@ Columns in the output file \texttt{spec\_con\_tell.csv} and \texttt{spec\_con\_t
 
 \newpage
 
-\section{Step 1-2: remove the spikes}
+\section{Step 1.1: spike rejection}
 
 Spikes appear in the GIANO spectra.
 The AFS normalisation algorithm is largely affected by the spikes. 
-Thus here we first reject the spikes in the spectrum and produce ``spike free'' spectra for continuum fitting.
-A raw continuum and a 61-pixel running median + running standard deviation (with sigma clipping) line is first derived. 
-All the pixels above these two curves are treated as spikes. 
+Thus, we first reject the spikes in the spectrum and produce ``spike free'' spectra for continuum fitting.
+A \texttt{rollmax\_width}\,\r{A}, 0.99 quantile rolling window (\texttt{maxi\_roll\_fast}), 5,\r{A}, 0.75 and 0.5 quantile rolling windows (\texttt{Q3\_fast} and \texttt{Q2\_fast}) are  first derived. 
+All the pixels above \texttt{maxi\_roll\_fast} and 4*\texttt{Q3\_fast} - 3*\texttt{Q2\_fast} are treated as spikes. 
 Their values are calculated by linear interpolation using the adjacent pixels, as shown below.
 
 \begin{figure}[H]
@@ -545,12 +578,429 @@ Their values are calculated by linear interpolation using the adjacent pixels, a
     \includegraphics[width=1\columnwidth]{../spike_rej/order32.pdf}
 \end{figure}
 
+\newpage
+
+\section{Step 1.2: Overall alpha-radius determination}
+
+Here we determine the \texttt{line\_FWHM} by using the auto-correlation function to the roughly normalized spectra, and set the FWHM of the main peak as the radius.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order81.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order80.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order79.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order78.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order77.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order76.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order75.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order74.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order73.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order72.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order71.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order70.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order69.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order68.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order67.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order66.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order65.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order64.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order63.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order62.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order61.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order60.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order59.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order58.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order57.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order56.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order55.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order54.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order53.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order52.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order51.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order50.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order49.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order48.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order47.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order46.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order45.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order44.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order43.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order42.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order41.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order40.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order39.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order38.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order37.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order36.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order35.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order34.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order33.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../line_width/order32.pdf}
+\end{figure}
 
 \newpage
 
-\section{Step 3-4: raw continuum normalisation}
+\section{Step 1.3: Alpha radius determination}
 
-The spike-removed spectra in steps 1-2 are used to perform a continuum fitting and normalisation.
+On top of step 1.2, we add a penalty on the overall alpha-radius, depending on the distance between the rough continuum and the flux. 
+The larger the distance, the larger the penalty, thus the final radius. 
+This process can help the alpha shape ``jump'' over the wide spectral line, thus preserving the line shape.
+The final radius is calculated by: $r = \texttt{line\_FWHM} / c \times \lambda \times \texttt{base\_ratio} * (1 + \texttt{penalty} * \texttt{penalty\_ratio})$
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order81.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order80.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order79.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order78.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order77.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order76.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order75.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order74.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order73.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order72.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order71.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order70.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order69.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order68.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order67.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order66.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order65.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order64.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order63.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order62.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order61.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order60.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order59.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order58.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order57.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order56.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order55.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order54.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order53.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order52.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order51.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order50.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order49.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order48.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order47.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order46.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order45.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order44.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order43.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order42.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order41.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order40.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order39.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order38.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order37.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order36.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order35.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order34.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order33.pdf}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\columnwidth]{../alpha_radius/order32.pdf}
+\end{figure}
+
+\newpage
+
+\section{Step 1.4: continuum normalisation}
+
+The alphs-shape then go through the peak-removed, smoothed spectra to extract the continuum points.
+These points are then used to interpoate and derive the continuum.
 For some orders ([tell_con_order]), the telluric absorption is moderate to strong, so that the continuum shape is affected.
 Using the continuum corrected to perform telluric correction would over-correct the continuum. 
 Thus the continuum of these orders are altered to fit the telluric spectra continuum, by $f_\mathrm{} = f_\mathrm{con} \times \mathrm{AFScont}(f_\mathrm{tell-standard})$.
@@ -761,7 +1211,7 @@ Thus the continuum of these orders are altered to fit the telluric spectra conti
 \section{Step 5: telluric correction}
 
 Telluric correction is then performed using TelFit. 
-The TelFit telluric spectra is altered to provide the minimum standard deviation of $f / f$.
+The TelFit telluric spectra is altered to provide the minimum standard deviation of $f_\mathrm{obs} / f_\mathrm{tell}$.
 Since the continuum normalisation is usually good, no further normalisation is required after telluric correction. 
 
 \begin{figure}[H]

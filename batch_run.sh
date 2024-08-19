@@ -12,13 +12,3 @@ find "$search_dir" -type f -name "*.fits" | while read -r file; do
     sleep 1
 
 done
-
-
-# # 使用 find 查找以 ASCC19 开头的文件
-# find "$search_dir" -type f -name "ASCC19*" | while read file; do
-#   # 构造新的文件名，将 ASCC19 替换为 ASCC_19
-#   new_file=$(echo "$file" | sed 's/ASCC19/ASCC_19/')
-  
-#   # 重命名文件
-#   mv "$file" "$new_file"
-# done
