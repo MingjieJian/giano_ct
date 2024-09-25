@@ -16,14 +16,12 @@ from functools import wraps
 from scipy.optimize import minimize
 from scipy.signal import medfilt
 
-import os, sys
-import shutil
+import os, sys, shutil
 
 import spectres
 
 import argparse
-
-import alpha_continuum, shutil
+import alpha_continuum
 
 script_folder = os.path.dirname(os.path.abspath(__file__))
 
