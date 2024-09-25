@@ -626,7 +626,7 @@ def main(input_spec, output_folder, stretch=True, fit_method='poly', poly_deg=8,
 
     generate_report(input_spec, output_folder, EL, EL_status, version, stretch, fit_method, poly_deg, rollmax_width, base_ratio, penalty_ratio)
 
-version = '0.1.0'
+version = '0.2.0'
 
 # Read the standard telluric spectra
 standard_telluric_spectra = np.load(f'{script_folder}/standard_telluric_spectra.npy')
