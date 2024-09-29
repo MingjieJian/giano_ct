@@ -10,11 +10,7 @@ from astropy import units as u
 from telfit import TelluricFitter, DataStructures
 from functools import wraps
 
-# import rpy2.robjects as robjects
-# from rpy2.robjects import pandas2ri
-# pandas2ri.activate()
 from scipy.optimize import minimize
-from scipy.signal import medfilt
 
 import os, sys, shutil
 
@@ -22,6 +18,10 @@ import spectres
 
 import argparse
 import alpha_continuum
+
+from pqdm.processes import pqdm
+
+import pickle
 
 script_folder = os.path.dirname(os.path.abspath(__file__))
 
@@ -37,20 +37,6 @@ def find_overlap_range(arr1, arr2):
         overlap_range = None
     
     return overlap_range
-
-# def afs(spec, q=0.95, d=0.25, input_flux='flux'):
-    
-    spec_r = spec[['wave', input_flux]]
-    spec_r.columns = ['wv', 'intens']
-    spec_r = pandas2ri.py2rpy_pandasdataframe(spec_r)
-
-    q_r = robjects.FloatVector([q])
-    d_r = robjects.FloatVector([d])
-
-    AFS = robjects.r['AFS']
-    result = AFS(spec_r, q=q_r, d=d_r)
-    
-    return result
 
 def split_continuous_elements(arr):
     result = []
@@ -210,6 +196,54 @@ def alpha_continuum_func(spec, plot_save_dir, **args):
 
     return res
 
+def telluric_correction_single(spec, order, EL):
+
+    indices = spec['order'] == order
+    length = len(spec[indices])
+
+    if order in tell_correct_type['None']:
+        # Skip the telluric correction since the telluric lines in this order are too strong.
+        return np.array([np.nan]*length), np.ones(length)
+        spec.loc[indices, 'tell_flux'] = np.nan
+        spec.loc[indices, 'flux_normed_notell'] = 1
+    else:
+        try:
+            res = Telfit(spec.loc[indices, 'wave'].values, (spec.loc[indices, 'flux_peaks_removed_stretched'] / spec.loc[indices, 'continuum']).values,
+                            EL, 285, 'TNG', 50000, air_wave=False, suppress_stdout=True)
+        except:
+            # Telfit failed, do nothing.
+            print(f'Telluric correction of order {order} failed.')
+            # res.y = 1 - 1e-4
+
+            return np.ones(length), spec.loc[indices, 'flux_normed'].values
+            spec.loc[indices, 'tell_flux'] = 1
+            spec.loc[indices, 'flux_normed_notell'] = spec.loc[indices, 'flux_normed'] / spec.loc[indices, 'tell_flux']
+            
+        res.y += 1e-4
+        tell_indices = 1 - res.y > 0.01
+
+        if order in tell_correct_type['tell_con']:
+            cut_wav = tell_correct_type['tell_con_wav'][list(tell_correct_type['tell_con']).index(order)]
+            if cut_wav > 0:
+                tell_indices = tell_indices & (res.x*10 <= cut_wav)
+                print('Order {}, cut_wav = {}'.format(order, cut_wav))
+            elif cut_wav < 0:
+                tell_indices = tell_indices & (res.x*10 >= -cut_wav)
+                print('Order {}, cut_wav = {}'.format(order, cut_wav))
+
+        tell_ratio = minimize(tell_correct_std, 1, 
+                            args=(spec.loc[indices, 'flux_normed'][tell_indices].values, res.y[tell_indices]),
+                            bounds=[(0.5, 1.5)])['x'][0]
+        
+        tell_flux = (1 - (1-res.y) * tell_ratio)
+        # print('Telluric correction test:')
+        # print(tell_ratio)
+        # print(res.y)
+        # print(tell_flux)
+
+        return res.y, spec.loc[indices, 'flux_normed'].values / res.y
+
+
 def telluric_correction(spec, input_spec, test=False):
 
     order_list = spec.groupby('order').size().index
@@ -233,7 +267,16 @@ def telluric_correction(spec, input_spec, test=False):
         print('Testing telluric_correction, only create fake result.')
         return spec, EL, EL_status
 
+    args = [[spec, order, EL] for order in order_list]
+    result = pqdm(args, telluric_correction_single, n_jobs=20, argument_type='args')
+
+    j = 0
     for order in tqdm(order_list):
+        indices = spec['order'] == order
+        spec.loc[indices, 'tell_flux'] = result[j][0]
+        spec.loc[indices, 'flux_normed_notell'] = result[j][1]
+        j += 1
+        continue
     # for order in tqdm([77]):
         indices = spec['order'] == order
         if order in tell_correct_type['None']:
@@ -267,6 +310,7 @@ def telluric_correction(spec, input_spec, test=False):
                                 bounds=[(0.5, 1.5)])['x'][0]
             spec.loc[indices, 'tell_flux'] = (1 - (1-res.y) * tell_ratio)
             spec.loc[indices, 'flux_normed_notell'] = spec.loc[indices, 'flux_normed'] / spec.loc[indices, 'tell_flux']
+
     return spec, EL, EL_status
     
 def combine(spec, edge_percent=0.2):
@@ -303,8 +347,13 @@ def combine(spec, edge_percent=0.2):
                 spec_t1 = spec[(spec['order'] == order) & (spec['wave'] >= wav_overlap_start) & (spec['wave'] < wav_overlap_mid)]
                 spec_t2 = spec[(spec['order'] == order-1) & (spec['wave'] >= wav_overlap_start-0.5) & (spec['wave'] < wav_overlap_mid+0.5)]
                 spec_t2_resample = spec_t1[spec_t1.columns]
+                # Clear the part of spectra if one of the order is in tell_correct_type of None.
+                if order in tell_correct_type['None']:
+                    spec_t2['flux_normed_notell'] = 1
+                elif order-1 in tell_correct_type['None']:
+                    spec_t1['flux_normed_notell'] = 1
 
-                # ['order', 'wave', 'flux', 'snr', 'flux_peaks_removed', 'indices_peaks', 'flux_peaks_removed_smoothed', 'radius', 'flux_peaks_removed_smoothed_stretched', 'flux_stretched', 'edge', 'continuum', 'flux_normed', 'tell_flux', 'flux_normed_notell']
+                # ['order', 'wave', 'flux', 'snr', 'flux_peaks_removed', 'spike_mask', 'flux_peaks_removed_smoothed', 'radius', 'flux_peaks_removed_smoothed_stretched', 'flux_stretched', 'edge', 'continuum', 'flux_normed', 'tell_flux', 'flux_normed_notell']
                 for col in ['flux', 'snr', 'flux_peaks_removed', 'flux_peaks_removed_smoothed', 'flux_peaks_removed_smoothed_stretched', 'flux_stretched', 'continuum', 'flux_normed', 'tell_flux', 'flux_normed_notell']:
                     spec_t2_resample[col] = spectres.spectres(spec_t1['wave'].values, spec_t2['wave'].values, spec_t2[col].values)
 
@@ -330,6 +379,11 @@ def combine(spec, edge_percent=0.2):
                 spec_t1 = spec[(spec['order'] == order) & (spec['wave'] >= wav_overlap_mid-0.5) & (spec['wave'] < wav_overlap_end+0.5)]
                 spec_t2 = spec[(spec['order'] == order-1) & (spec['wave'] >= wav_overlap_mid) & (spec['wave'] < wav_overlap_end)]
                 spec_t1_resample = spec_t2[spec_t2.columns]
+                # Clear the part of spectra if one of the order is in tell_correct_type of None.
+                if order in tell_correct_type['None']:
+                    spec_t2['flux_normed_notell'] = 1
+                elif order-1 in tell_correct_type['None']:
+                    spec_t1['flux_normed_notell'] = 1
 
                 for col in ['flux', 'snr', 'flux_peaks_removed', 'flux_peaks_removed_smoothed', 'flux_peaks_removed_smoothed_stretched', 'flux_stretched', 'continuum', 'flux_normed', 'tell_flux', 'flux_normed_notell']:
                     spec_t1_resample[col] = spectres.spectres(spec_t2['wave'].values, spec_t1['wave'].values, spec_t1[col].values)
@@ -350,63 +404,34 @@ def combine(spec, edge_percent=0.2):
 
     return spec_all
     
+def draw_mask(wave, mask, color='gray'):
+
+    diff_wave = np.diff(wave)
+    diff_wave = np.concatenate([[diff_wave[0]], diff_wave])
+
+    in_true_region = False
+    first = True
+    for i in range(len(mask)):
+        if mask[i] and not in_true_region:
+            # 找到 True 区域的开始
+            start = wave[i] - diff_wave[i]/2
+            in_true_region = True
+        elif not mask[i] and in_true_region:
+            # 找到 True 区域的结束，并用 axvspan 高亮
+            end = wave[i] + diff_wave[i]/2
+            if first:
+                plt.axvspan(start, end, facecolor=color, edgecolor='none', alpha=0.3, label='Telluric Mask')
+                first = False
+            else:
+                plt.axvspan(start, end, facecolor=color, edgecolor='none', alpha=0.3)
+            in_true_region = False    
+
 def plot_result(spec, spec_all, output_folder, spike_rej=True, cont_nor=True, tell_corr=True, combine=True, final=True):
     '''
     Plot the raw continuum spectra.
     '''
 
     order_list = spec.groupby('order').size().index
-
-    # if spike_rej:
-    #     for order in order_list[::-1]:
-    #         plt.figure(figsize=(13, 3), dpi=150)
-
-    #         indices = spec['order'] == order
-    #         plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux'], lw=1, alpha=0.5, label='Raw spectra')
-    #         plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_peaks_removed'], lw=1, zorder=0, label='Raw spectra (spikes removed)')
-    #         plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux'] / spec.loc[indices, 'flux_con_raw'], lw=1, label='Initial continuum')
-    #         plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_median_filtered'], '--', lw=1, zorder=0, label='Medain filtered spectra')
-    #         plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_median_filtered'] + spec.loc[indices, 'flux_std_filtered'], 
-    #                 lw=1, zorder=0, label='Std filtered spectra')            
-    #         indices_removed = indices & spec['indices_con_remove']
-    #         plt.plot(spec.loc[indices_removed, 'wave'], spec.loc[indices_removed, 'flux'], 
-    #                 'x', color='red', markersize=4, alpha=0.5, label='Removed spikes')
-            
-    #         plt.title('Order {}'.format(order))
-    #         plt.legend(fontsize=7)
-    #         plt.tight_layout()
-            
-    #         plt.savefig(output_folder + 'spike_rej/order{}.pdf'.format(order))
-    #         plt.close()
-
-    # if cont_nor:
-    #     for order in tqdm(order_list[::-1]):
-    #         plt.figure(figsize=(13, 3), dpi=100)
-
-    #         indices = spec['order'] == order
-    #         plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux'] / np.max(spec.loc[indices, 'flux']), 
-    #                 lw=1, alpha=0.4, color='gray', label='Raw spectra')
-    #         plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_con_final'], lw=1, label='Normalized spectra')
-    #         xlim = plt.xlim()
-    #         plt.xlim(xlim)
-
-    #         indices = spec['order'] == order - 1
-    #         plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux'] / np.max(spec.loc[indices, 'flux']), 
-    #                 c='gray', lw=1, zorder=0, alpha=0.6, ls='-.', label='Raw spectra (previous order)')
-    #         indices = spec['order'] == order + 1
-    #         plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux'] / np.max(spec.loc[indices, 'flux']), 
-    #                 c='gray', lw=1, zorder=0, alpha=0.6, ls='--', label='Raw spectra (next order)')
-    #         plt.title('Order {}'.format(order))
-    #         plt.axhline(1, ls='--', color='brown', alpha=0.5)
-            
-    #         indices = (standard_telluric_spectra['wave'] >= xlim[0]) & (standard_telluric_spectra['wave'] <= xlim[1])
-    #         plt.plot(standard_telluric_spectra['wave'][indices], standard_telluric_spectra['flux'][indices], lw=1, alpha=0.4, label='Standard Telluric spectra')
-            
-    #         plt.legend(fontsize=7)
-    #         plt.tight_layout()
-            
-    #         plt.savefig(output_folder + 'cont_nor/order{}.pdf'.format(order))
-    #         plt.close()
 
     if tell_corr:
         for order in tqdm(order_list):
@@ -415,8 +440,8 @@ def plot_result(spec, spec_all, output_folder, spike_rej=True, cont_nor=True, te
             indices = spec['order'] == order
             plt.subplot(211)
             plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_normed'], label='Normalized spectra')
-            plt.scatter(spec.loc[indices & spec['indices_peaks'], 'wave'], 
-                        spec.loc[indices & spec['indices_peaks'], 'flux_normed'],
+            plt.scatter(spec.loc[indices & spec['spike_mask'], 'wave'], 
+                        spec.loc[indices & spec['spike_mask'], 'flux_normed'],
                         marker='x', color='red', label='Removed spikes')
 
             if order not in tell_correct_type['None']:
@@ -513,17 +538,19 @@ def plot_result(spec, spec_all, output_folder, spike_rej=True, cont_nor=True, te
             plt.figure(figsize=(13, 3))
 
             indices = spec['order'] == order
-            plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_normed_notell'], lw=1, c='gray', alpha=0.6, zorder=0, label='Normalisted spectra of current order after telluric correction')
+            plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_normed_notell'], lw=1, c='gray', alpha=0, zorder=0, label='')
             plt.xlim(plt.xlim())
             plt.plot(spec_all['wave'], spec_all['flux_normed_notell'], lw=1, zorder=5, label='Normalisted-connected spectra after telluric correction')
+            plt.plot(spec_all['wave'], spec_all['tell_flux'], c='gray', lw=1, zorder=4, label='Telluric spectra')
+            draw_mask(spec_all['wave'].values, spec_all['telluric_mask'].values)
 
-            indices = spec['order'] == order - 1
-            plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_normed_notell'], 
-                    c='gray', lw=1, zorder=0, alpha=0.6, ls='-.', label='Normalisted spectra of the previous order after telluric correction')
-            indices = spec['order'] == order + 1
-            plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_normed_notell'], 
-                    c='gray', lw=1, zorder=0, alpha=0.6, ls='--', label='Normalisted spectra of the next order after telluric correction')
-            plt.title(f'Order {order}')
+            # indices = spec['order'] == order - 1
+            # plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_normed_notell'], 
+            #         c='gray', lw=1, zorder=0, alpha=0.6, ls='-.', label='Normalisted spectra of the previous order after telluric correction')
+            # indices = spec['order'] == order + 1
+            # plt.plot(spec.loc[indices, 'wave'], spec.loc[indices, 'flux_normed_notell'], 
+            #         c='gray', lw=1, zorder=0, alpha=0.6, ls='--', label='Normalisted spectra of the next order after telluric correction')
+            # plt.title(f'Order {order}')
             plt.axhline(1, ls='--', color='brown')
  
             plt.ylim(0, 1.15)
@@ -544,8 +571,8 @@ def plot_result(spec, spec_all, output_folder, spike_rej=True, cont_nor=True, te
         plt.close()
 
 def generate_report(input_spec, output_folder, EL, EL_status, version, stretch, fit_method, poly_deg, rollmax_width, base_ratio, penalty_ratio):
-    input_spec_report = input_spec.replace('_', '\_')
-    output_folder_str = output_folder.replace('_', '\_')
+    input_spec_report = input_spec.replace('_', r'\_')
+    output_folder_str = output_folder.replace('_', r'\_')
     report_replace_dict = {
         'input_file_name': f'\\texttt{{{input_spec_report}}}',
         'output_folder': f'\\texttt{{{output_folder_str}}}',
@@ -574,9 +601,10 @@ def generate_report(input_spec, output_folder, EL, EL_status, version, stretch, 
     os.system(f'bibtex report')
     os.system(f'pdflatex -interaction=nonstopmode -quiet report')
     os.system(f'pdflatex -interaction=nonstopmode -quiet report')
+    os.system(f'mv report.pdf ../giano_ct_report.pdf')
     os.chdir(working_folder)
 
-def main(input_spec, output_folder, stretch=True, fit_method='poly', poly_deg=8, rollmax_width=20, base_ratio=2, penalty_ratio=1, overwrite=False, detail_out=False):
+def main(input_spec, output_folder, stretch=True, fit_method='poly', poly_deg=8, rollmax_width=20, base_ratio=2, penalty_ratio=1, overwrite=True, detail_out=False):
 
     # If not overwrite, then check whether the final spectra exist.
     if not overwrite:
@@ -604,19 +632,23 @@ def main(input_spec, output_folder, stretch=True, fit_method='poly', poly_deg=8,
         spec = pd.DataFrame({'order':order, 'wave':wave, 'flux':flux, 'snr':snr})
 
     spec['wave'] *= 10
+
     # Preprocessing, avoid numeratic errors: 
     spec = spec[spec['wave'] > 9375]
     spec.loc[spec['snr'] < 0.01, 'snr'] = 0.01
     spec.loc[spec['flux'] < 0.01, 'flux'] = 0.01
-    
+        
     spec = alpha_continuum_func(spec, output_folder, stretch=stretch, fit_method=fit_method, poly_deg=poly_deg, rollmax_width=rollmax_width, base_ratio=base_ratio, penalty_ratio=penalty_ratio)
     spec, EL, EL_status = telluric_correction(spec, input_spec)
     spec_all = combine(spec)
+    # Define telluric mask
+    spec['telluric_mask'] = ((spec['tell_flux'] < 1-0.025) & (np.abs(spec['tell_flux'] - spec['flux_normed']) < spec['flux_normed'] / spec['snr']*10)) | (spec['tell_flux'] < 1-0.8)
+    spec_all['telluric_mask'] = ((spec_all['tell_flux'] < 1-0.025) & (np.abs(spec_all['tell_flux'] - spec_all['flux_normed']) < spec_all['flux_normed'] / spec_all['snr']*10)) | (spec_all['tell_flux'] < 1-0.8)
     plot_result(spec, spec_all, output_folder)
 
     if not detail_out:
-        spec = spec[['order', 'wave', 'flux', 'snr', 'continuum', 'flux_normed', 'tell_flux', 'flux_normed_notell']]
-        spec_all = spec_all[['order', 'wave', 'flux', 'snr', 'continuum', 'flux_normed', 'tell_flux', 'flux_normed_notell']]
+        spec = spec[['order', 'wave', 'flux', 'snr', 'continuum', 'flux_normed', 'tell_flux', 'flux_normed_notell', 'spike_mask', 'telluric_mask']]
+        spec_all = spec_all[['order', 'wave', 'flux', 'snr', 'continuum', 'flux_normed', 'tell_flux', 'flux_normed_notell', 'spike_mask', 'telluric_mask']]
 
     # Save the spectra
     spec.to_csv(f'{output_folder}/spec_con_tell.csv', index=False)

@@ -106,6 +106,8 @@ A detailed description of each step is described in the sections referenced abov
 
 \section{Parameters and output columns}
 
+\subsection{Input parameters}
+
 \begin{itemize}
     \item input file name: [input_file_name]
     \item output folder: [output_folder]
@@ -133,6 +135,8 @@ A detailed description of each step is described in the sections referenced abov
     \item Elevation of the star: [EL]
 \end{itemize}
 
+\subsection{Output columns}
+
 Columns in the output file \texttt{spec\_con\_tell.csv} and \texttt{spec\_con\_tell\_combine.csv}:
 \begin{itemize}
     \item \texttt{order}: input column, the order of the GIANO spectra
@@ -143,6 +147,8 @@ Columns in the output file \texttt{spec\_con\_tell.csv} and \texttt{spec\_con\_t
     \item \texttt{flux\_normed}: the normalized spectra with telluric lines
     \item \texttt{tell\_flux}: the model-fitted telluric spectra.
     \item \texttt{flux\_normed\_notell}: the normalized spectra without telluric lines, or the final product.
+    \item \texttt{spike\_mask}: The mask indicating whether a pixel is classified as spike (if True).
+    \item \texttt{telluric\_mask}: The mask indicating whether a pixel is dominated by telluric lines (if True). See section~\ref{sec:telluric_correction}.
 \end{itemize}
 
 Columns in the output file if \texttt{detail\_out} is True.
@@ -1209,10 +1215,19 @@ Thus the continuum of these orders are altered to fit the telluric spectra conti
 \newpage
 
 \section{Step 5: telluric correction}
+\label{sec:telluric_correction}
 
 Telluric correction is then performed using TelFit. 
-The TelFit telluric spectra is altered to provide the minimum standard deviation of $f_\mathrm{obs} / f_\mathrm{tell}$.
 Since the continuum normalisation is usually good, no further normalisation is required after telluric correction. 
+
+A pixel will be in \texttt{telluric\_mask} if:
+
+\begin{itemize}
+    \item The fitted telluric spectrum depth is larger than 0.025 and the differences in telluric and observed spectrum is smaller than 10$\times$ uncertainty, or
+    \item The fitted telluric spectrum depth is larger than 0.8.
+\end {itemize}
+
+Note that this is only a reference mask which can remove most of the outrageous values due to telluric line, but it is recommended to compare the observed spectrum and the fitted telluric spectrum directly to see if a pixel should be removed in your analysis.
 
 \begin{figure}[H]
     \centering
